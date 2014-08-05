@@ -80,12 +80,7 @@ of the algorithm. Therefore, Gradient Boost was chosen as our Classification Alg
 
 ##Results
 
+![bag_img](./images/bag_performance.png)
+![boost_img](./images/boost_performance.png)
 
-
-Your project will demonstrate your ability to:
-
-Understand, explain and utilize the supervised learning classification framework
-Determine and refine meaningful classification challenges
-Identify appropriate features, labels and classification algorithms
-Create and train a classifier and adjust features to improve accuracy
-Develop a basic report to explain your process, data and results
+Overall, the Boosting algorithm provided greater consistently between in-sample and out-of-sample f1 scores, and therefore was our algorithm of choice.
