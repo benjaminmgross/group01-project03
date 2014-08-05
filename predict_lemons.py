@@ -23,6 +23,8 @@ import numpy
 import itertools
 import sys
 from sklearn.ensemble import BaggingClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import f1_score
 
 def sig_veh_buy(data):
@@ -196,18 +198,72 @@ def parse_data(file_path):
         :class:`pandas.DataFrame` of the aggregated feature calcs
     
     """
-    data = pandas.DataFrame.from_csv(file_path + 'lemon_training.csv',
+    data = pandas.DataFrame.from_csv(file_path + '/train_data/lemon_training.csv',
                                      index_col = None)
     mpy = miles_per_year(data)
     zip_code = truncated_zipcode(data)
     mmr = sig_MMR(data)
     buy_df = sig_veh_buy(data)
     bw = buy_vs_warranty(data)
-    at_risk = load_lemon_model_year(file_path)
-    return pandas.concat( [mpy, zip_code, mmr, buy_df, bw, at_risk], 
-                          axis = 1)
+    veh_age = data['VehicleAge'].copy()
+    at_risk = load_lemon_model_year(file_path + '/feature_data/')
+    agg =  pandas.concat( [mpy, zip_code, mmr, buy_df, bw, at_risk,
+                           veh_age], axis = 1)
+    not_sig = ['0,3', 'MMRAcquisitionAuctionAveragePrice',
+               'MMRCurrentRetailAveragePrice']
+    agg.drop(not_sig, axis = 1, inplace = True)
+    return agg
 
-def bagging_predict_lemons(x_train, x_test, y_train, y_test, rands = None):
+def gradient_boost(x_train, x_test, y_train, 
+                                 y_test, rands = None):
+    """
+    Predict the lemons using a RandomForest and a random seed
+    both for the number of features, as well as for the size of the
+    sample to train the data on
+
+    ARGS:
+
+        - x_train: :class:`pandas.DataFrame` of the x_training data
+
+        - y_train: :class:`pandas.Series` of the y_training data
+
+        - x_test: :class:`pandas.DataFrame` of the x_testing data
+
+        - y_test: :class:`pandas.Series` of the y_testing data
+
+        - rands: a :class:`tuple` of the (rs, rf) to seed the sample
+        and features of the BaggingClassifier.  If `None`, then
+        rands are generated and provided in the return `Series`
+
+    RETURNS:
+
+        :class:`pandas.Series` of the f1-scores and random seeds
+    """
+    #create a dictionary for the return values
+    ret_d = {'train-f1':[], 'test-f1':[], 'rs':[], 'rf':[]}
+
+    #use the randoms provided if there are any, otherwise generate them
+    if not rands:
+        rs =  numpy.random.rand()
+        rf = numpy.random.rand()
+        while rf < 0.1:
+            rf = numpy.random.rand()
+    else:
+        rs, rf = rands[0], rands[1]
+    #place them into the dictionary
+    ret_d['rs'], ret_d['rf'] = rs, rf
+    #create and run the bagging classifier
+    bc = GradientBoostingClassifier(n_estimators = 300,
+                                    max_features = rf)
+    bc.fit(x_train, y_train)
+
+    y_hat_train = bc.predict(x_train)
+    ret_d['train-f1'] = f1_score(y_train, y_hat_train)
+    y_hat_test = bc.predict(x_test)
+    ret_d['test-f1'] = f1_score(y_test, y_hat_test)
+    return pandas.Series(ret_d)
+
+def bagging(x_train, x_test, y_train, y_test, rands = None):
     """
     Predict the lemons using a Bagging Classifier and a random seed
     both for the number of features, as well as for the size of the
@@ -245,7 +301,7 @@ def bagging_predict_lemons(x_train, x_test, y_train, y_test, rands = None):
     #place them into the dictionary
     ret_d['rs'], ret_d['rf'] = rs, rf
     #create and run the bagging classifier
-    bc = BaggingClassifier(n_estimators = 100, max_samples = rs,
+    bc = BaggingClassifier(n_estimators = 300, max_samples = rs,
                            max_features = rf, n_jobs = -1)
 
     bc.fit(x_train, y_train)
@@ -292,12 +348,11 @@ def create_in_out_samples(data, in_sample_size):
 
     return isi, in_sample, osi, out_sample
 
-def load_data_and_run_bagging_classifier(file_path):
+def load_data_and_run_classifiers(file_path, num_sims):
 
-    data = pandas.DataFrame.from_csv(file_path + 'lemon_training.csv',
+    data = pandas.DataFrame.from_csv(file_path + 'train_data/lemon_training.csv',
                                      index_col = None)
-    #import pdb
-    #pdb.set_trace()
+
     my_features = parse_data(file_path)
     agg_data = pandas.concat([my_features, data['IsBadBuy']], axis = 1)
     agg_data.dropna(inplace = True)
@@ -305,14 +360,23 @@ def load_data_and_run_bagging_classifier(file_path):
     isi, in_sample, osi, out_sample = create_in_out_samples(
         agg_data[x_cols], int(agg_data.shape[0]/2.) )
 
-    #run the bagging classifier 1000 times
-    d = {}
-    for i in numpy.arange(100):
-        print "Now on " + str(i) + " out of " + str(100)
-        d['sim_'+str(i)] = bagging_predict_lemons(in_sample, out_sample,
-            agg_data['IsBadBuy'][isi], agg_data['IsBadBuy'][osi])
-        
-    return pandas.DataFrame(d).transpose()
+    #run the boosting & bagging classifier 1000 times
+    bag_d = {}
+    boost_d = {}
+
+    for i in numpy.arange(num_sims):
+        rs, rd = numpy.random.rand(), numpy.random.rand()
+        while rd < .1:
+            rd = numpy.random.rand()
+
+        print "Now on " + str(i) + " out of " + str(num_sims)
+        bag_d['sim_'+str(i)] = bagging(in_sample, out_sample,
+            agg_data['IsBadBuy'][isi], agg_data['IsBadBuy'][osi], (rs,rd))
+        boost_d['sim_'+str(i)] = gradient_boost(in_sample, out_sample,
+            agg_data['IsBadBuy'][isi], agg_data['IsBadBuy'][osi], (rs, rd))
+    bag_df = pandas.DataFrame(bag_d).transpose()
+    boost_df = pandas.DataFrame(boost_d).transpose()
+    return bag_df, boost_df
 
 if __name__ == '__main__':
 	
