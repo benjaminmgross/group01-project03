@@ -214,6 +214,49 @@ def parse_data(file_path):
     agg.drop(not_sig, axis = 1, inplace = True)
     return agg
 
+def prep_prediction_data(test_df, train_df):
+    cols = ['MMRAcquisitionAuctionAveragePrice','MMRAcquisitionAuctionCleanPrice',
+            'MMRAcquisitionRetailAveragePrice','MMRAcquisitonRetailCleanPrice',
+            'MMRCurrentAuctionAveragePrice', 'MMRCurrentAuctionCleanPrice', 
+            'MMRCurrentRetailAveragePrice','MMRCurrentRetailCleanPrice']
+
+    used_pairs = [u'1,2', u'1,3', u'2,3', u'2,6', u'2,7', u'3,6', u'3,7']
+    
+    mpy = miles_per_year(test_df)
+    zip_code = truncated_zipcode(test_df)
+    bw = buy_vs_warranty(test_df)
+    veh_age = test_df['VehicleAge'].copy()
+
+    #construct the mmr columns
+    d = {}
+    for pair in used_pairs:
+        x, y = map(lambda x: int(x), pair.split(','))
+        d[pair] = test_df[cols[x]].div(test_df[cols[y]])
+    pair_df = pandas.DataFrame(d)
+    is_inf = pair_df.apply(numpy.isinf)
+    pair_df[is_inf] = numpy.nan
+    
+    #construct the at risk columns
+    test_df['model_year'] = test_df["Model"] + " " + test_df["VehYear"].apply(str)
+    test_df['at_risk_my'] = 0
+    at_risk_cars = pandas.Series.from_csv('./feature_data/at_risk_cars.csv')
+    for car in at_risk_cars.index:
+        test_df['at_risk_my'][test_df['model_year'] == car] = 1
+
+    #contruct the buy price columns
+    buy_cols = [u'MMRAcquisitonRetailCleanPrice', u'MMRCurrentAuctionAveragePrice',
+                u'MMRCurrentRetailCleanPrice']
+    d = {}
+    for col in buy_cols:
+        d[col] = test_df['VehBCost'].div(test_df[col])
+    buy_df = pandas.DataFrame(d)
+    is_inf = buy_df.apply(numpy.isinf)
+    buy_df[is_inf] = numpy.nan
+    tmp = pandas.concat( [test_df['at_risk_my'], mpy, zip_code, bw, veh_age,
+                           pair_df, buy_df], axis = 1)
+    #ensure the columns are in the same locations as the training set
+    return tmp.loc[ : , train_df.columns]
+    
 def gradient_boost(x_train, x_test, y_train, 
                                  y_test, rands = None):
     """
@@ -263,7 +306,57 @@ def gradient_boost(x_train, x_test, y_train,
     ret_d['test-f1'] = f1_score(y_test, y_hat_test)
     return pandas.Series(ret_d)
 
-def bagging(x_train, x_test, y_train, y_test, rands = None):
+def gradient_boost_with_depth(max_depth, x_train, x_test, y_train, 
+                                 y_test, rands = None):
+    """
+    Predict the lemons using a RandomForest and a random seed
+    both for the number of features, as well as for the size of the
+    sample to train the data on
+
+    ARGS:
+
+        - x_train: :class:`pandas.DataFrame` of the x_training data
+
+        - y_train: :class:`pandas.Series` of the y_training data
+
+        - x_test: :class:`pandas.DataFrame` of the x_testing data
+
+        - y_test: :class:`pandas.Series` of the y_testing data
+
+        - rands: a :class:`tuple` of the (rs, rf) to seed the sample
+        and features of the BaggingClassifier.  If `None`, then
+        rands are generated and provided in the return `Series`
+
+    RETURNS:
+
+        :class:`pandas.Series` of the f1-scores and random seeds
+    """
+    #create a dictionary for the return values
+    ret_d = {'train-f1':[], 'test-f1':[], 'rs':[], 'rf':[]}
+
+    #use the randoms provided if there are any, otherwise generate them
+    if not rands:
+        rs =  numpy.random.rand()
+        rf = numpy.random.rand()
+        while rf < 0.1:
+            rf = numpy.random.rand()
+    else:
+        rs, rf = rands[0], rands[1]
+    #place them into the dictionary
+    ret_d['rs'], ret_d['rf'] = rs, rf
+    #create and run the bagging classifier
+    bc = GradientBoostingClassifier(max_depth = max_depth,
+         n_estimators = 300, max_features = rf)
+    bc.fit(x_train, y_train)
+
+    y_hat_train = bc.predict(x_train)
+    ret_d['train-f1'] = f1_score(y_train, y_hat_train)
+    y_hat_test = bc.predict(x_test)
+    ret_d['test-f1'] = f1_score(y_test, y_hat_test)
+    return pandas.Series(ret_d)
+
+def bagging_with_base_estimator(base_estimator, x_train, x_test, y_train,
+                                y_test, rands = None):
     """
     Predict the lemons using a Bagging Classifier and a random seed
     both for the number of features, as well as for the size of the
@@ -301,8 +394,8 @@ def bagging(x_train, x_test, y_train, y_test, rands = None):
     #place them into the dictionary
     ret_d['rs'], ret_d['rf'] = rs, rf
     #create and run the bagging classifier
-    bc = BaggingClassifier(n_estimators = 300, max_samples = rs,
-                           max_features = rf, n_jobs = -1)
+    bc = BaggingClassifier(base_estimator = base_estimator, n_estimators = 300,
+                           max_samples = rs, max_features = rf, n_jobs = 1)
 
     bc.fit(x_train, y_train)
     y_hat_train = bc.predict(x_train)
